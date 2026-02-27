@@ -17,11 +17,12 @@ SongInfo = namedtuple("SongInfo", ["title", "artist", "album"])
 
 def get_ytmusic() -> YTMusic:
     """
-    @@@
+    Get YTMusic instance
     """
     if not os.path.exists("oauth.json"):
         print("ERROR: No file 'oauth.json' exists in the current directory.")
-        print("       Have you logged in to YTMusic?  Run 'ytmusicapi oauth' to login")
+        print("       Have you logged in to YTMusic?")
+        print("       Click 'Login to YT Music' tab and follow the instructions")
         sys.exit(1)
 
     try:
@@ -29,7 +30,11 @@ def get_ytmusic() -> YTMusic:
     except json.decoder.JSONDecodeError as e:
         print(f"ERROR: JSON Decode error while trying start YTMusic: {e}")
         print("       This typically means a problem with a 'oauth.json' file.")
-        print("       Have you logged in to YTMusic?  Run 'ytmusicapi oauth' to login")
+        print("       Click 'Login to YT Music' tab to regenerate credentials")
+        sys.exit(1)
+    except Exception as e:
+        print(f"ERROR: Could not authenticate with YTMusic: {e}")
+        print("       Click 'Login to YT Music' tab to regenerate credentials")
         sys.exit(1)
 
 

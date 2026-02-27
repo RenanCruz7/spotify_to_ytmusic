@@ -3,6 +3,14 @@
 from . import cli
 import sys
 import inspect
+import os
+
+# Force UTF-8 encoding on Windows
+if sys.platform == "win32":
+    os.environ['PYTHONIOENCODING'] = 'utf-8'
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 def list_commands(module):
     # include only functions defined in e.g. 'cli' module

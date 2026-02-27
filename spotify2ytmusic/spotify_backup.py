@@ -3,10 +3,13 @@
 #  This file is licensed under the MIT license
 #  This file originates from https://github.com/caseychu/spotify-backup
 
+import base64
 import codecs
+import hashlib
 import http.client
 import http.server
 import json
+import os
 import re
 import sys
 import time
@@ -50,25 +53,46 @@ class SpotifyAPI:
     def authorize(client_id, scope):
         """Open a browser for user authorization and return SpotifyAPI instance."""
         redirect_uri = f"http://127.0.0.1:{SpotifyAPI._SERVER_PORT}/redirect"
-        url = SpotifyAPI._construct_auth_url(client_id, scope, redirect_uri)
+        
+        # Generate PKCE parameters
+        code_verifier = SpotifyAPI._generate_code_verifier()
+        code_challenge = SpotifyAPI._generate_code_challenge(code_verifier)
+        
+        url = SpotifyAPI._construct_auth_url(client_id, scope, redirect_uri, code_challenge)
         print(f"Open this link if the browser doesn't open automatically: {url}")
         webbrowser.open(url)
 
-        server = SpotifyAPI._AuthorizationServer("127.0.0.1", SpotifyAPI._SERVER_PORT)
+        server = SpotifyAPI._AuthorizationServer("127.0.0.1", SpotifyAPI._SERVER_PORT, client_id, code_verifier, redirect_uri)
         try:
             while True:
                 server.handle_request()
         except SpotifyAPI._Authorization as auth:
+            if auth.access_token is None:
+                print(f"ERROR: Authorization failed - {auth.error}")
+                sys.exit(1)
             return SpotifyAPI(auth.access_token)
 
     @staticmethod
-    def _construct_auth_url(client_id, scope, redirect_uri):
+    def _generate_code_verifier():
+        """Generate a code verifier for PKCE."""
+        return base64.urlsafe_b64encode(os.urandom(32)).decode('utf-8').rstrip('=')
+    
+    @staticmethod
+    def _generate_code_challenge(code_verifier):
+        """Generate a code challenge from the verifier."""
+        digest = hashlib.sha256(code_verifier.encode('utf-8')).digest()
+        return base64.urlsafe_b64encode(digest).decode('utf-8').rstrip('=')
+
+    @staticmethod
+    def _construct_auth_url(client_id, scope, redirect_uri, code_challenge):
         return "https://accounts.spotify.com/authorize?" + urllib.parse.urlencode(
             {
-                "response_type": "token",
+                "response_type": "code",
                 "client_id": client_id,
                 "scope": scope,
                 "redirect_uri": redirect_uri,
+                "code_challenge_method": "S256",
+                "code_challenge": code_challenge,
             }
         )
 
@@ -95,7 +119,10 @@ class SpotifyAPI:
     _SERVER_PORT = 43019
 
     class _AuthorizationServer(http.server.HTTPServer):
-        def __init__(self, host, port):
+        def __init__(self, host, port, client_id, code_verifier, redirect_uri):
+            self.client_id = client_id
+            self.code_verifier = code_verifier
+            self.redirect_uri = redirect_uri
             super().__init__((host, port), SpotifyAPI._AuthorizationHandler)
 
         def handle_error(self, request, client_address):
@@ -104,36 +131,77 @@ class SpotifyAPI:
     class _AuthorizationHandler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
             if self.path.startswith("/redirect"):
-                self._redirect_to_token()
-            elif self.path.startswith("/token?"):
-                self._handle_token()
+                self._handle_redirect()
             else:
                 self.send_error(404)
 
-        def _redirect_to_token(self):
+        def _handle_redirect(self):
+            # Parse the authorization code from the query parameters
+            query = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(query)
+            
+            if 'error' in params:
+                self.send_response(400)
+                self.send_header("Content-Type", "text/html")
+                self.end_headers()
+                error = params['error'][0]
+                self.wfile.write(f"<script>window.close()</script>Error: {error}".encode())
+                raise SpotifyAPI._Authorization(None, error=error)
+            
+            if 'code' not in params:
+                self.send_response(400)
+                self.send_header("Content-Type", "text/html")
+                self.end_headers()
+                self.wfile.write(b"<script>window.close()</script>No authorization code received.")
+                raise SpotifyAPI._Authorization(None, error="No code")
+            
+            auth_code = params['code'][0]
+            
+            # Send response to close the window
             self.send_response(200)
             self.send_header("Content-Type", "text/html")
             self.end_headers()
             self.wfile.write(
-                b'<script>location.replace("token?" + location.hash.slice(1));</script>'
+                b"<script>window.close()</script>Thanks! You may now close this window."
             )
-
-        def _handle_token(self):
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html")
-            self.end_headers()
-            self.wfile.write(
-                b"<script>close()</script>Thanks! You may now close this window."
-            )
-            access_token = re.search("access_token=([^&]*)", self.path).group(1)
+            
+            # Exchange the code for an access token
+            access_token = self._exchange_code_for_token(auth_code)
             raise SpotifyAPI._Authorization(access_token)
+        
+        def _exchange_code_for_token(self, auth_code):
+            """Exchange the authorization code for an access token."""
+            token_url = "https://accounts.spotify.com/api/token"
+            
+            data = {
+                "grant_type": "authorization_code",
+                "code": auth_code,
+                "redirect_uri": self.server.redirect_uri,
+                "client_id": self.server.client_id,
+                "code_verifier": self.server.code_verifier,
+            }
+            
+            req = urllib.request.Request(
+                token_url,
+                data=urllib.parse.urlencode(data).encode('utf-8'),
+                method='POST'
+            )
+            
+            try:
+                with urllib.request.urlopen(req) as response:
+                    response_data = json.loads(response.read().decode('utf-8'))
+                    return response_data.get('access_token')
+            except urllib.error.HTTPError as e:
+                print(f"Error exchanging code for token: {e.read().decode('utf-8')}")
+                raise
 
         def log_message(self, format, *args):
             pass
 
     class _Authorization(Exception):
-        def __init__(self, access_token):
+        def __init__(self, access_token, error=None):
             self.access_token = access_token
+            self.error = error
 
 
 def fetch_user_data(spotify, dump):
@@ -141,31 +209,48 @@ def fetch_user_data(spotify, dump):
     playlists = []
     liked_albums = []
 
-    if "liked" in dump:
-        print("Loading liked albums and songs...")
-        liked_tracks = spotify.list("me/tracks", {"limit": 50})
-        liked_albums = spotify.list("me/albums", {"limit": 50})
-        playlists.append({"name": "Liked Songs", "tracks": liked_tracks})
+    try:
+        if "liked" in dump:
+            print("Loading liked albums and songs...")
+            liked_tracks = spotify.list("me/tracks", {"limit": 50})
+            liked_albums = spotify.list("me/albums", {"limit": 50})
+            print(f"  - Loaded {len(liked_tracks)} liked tracks")
+            print(f"  - Loaded {len(liked_albums)} liked albums")
+            playlists.append({"name": "Liked Songs", "tracks": liked_tracks})
 
-    if "playlists" in dump:
-        print("Loading playlists...")
-        playlist_data = spotify.list("me/playlists", {"limit": 50})
-        for playlist in playlist_data:
-            print(f"Loading playlist: {playlist['name']}")
-            playlist["tracks"] = spotify.list(
-                playlist["tracks"]["href"], {"limit": 100}
-            )
-        playlists.extend(playlist_data)
+        if "playlists" in dump:
+            print("Loading playlists...")
+            playlist_data = spotify.list("me/playlists", {"limit": 50})
+            print(f"  - Found {len(playlist_data)} playlists")
+            for playlist in playlist_data:
+                try:
+                    print(f"Loading playlist: {playlist['name']}", flush=True)
+                except Exception as e:
+                    print(f"Loading playlist: [name with special chars]", flush=True)
+                try:
+                    tracks = spotify.list(playlist["tracks"]["href"], {"limit": 100})
+                    playlist["tracks"] = tracks
+                    print(f"  - Loaded {len(tracks)} tracks")
+                except Exception as e:
+                    print(f"  - Error loading tracks: {e}")
+                    playlist["tracks"] = []
+            playlists.extend(playlist_data)
 
-    return playlists, liked_albums
+        return playlists, liked_albums
+    except Exception as e:
+        print(f"ERROR fetching user data: {e}")
+        raise
 
 
 def write_to_file(file, format, playlists, liked_albums):
     """Write fetched data to a file in the specified format."""
     print(f"Writing to {file}...")
+    print(f"Total playlists: {len(playlists)}")
+    print(f"Total liked albums: {len(liked_albums)}")
+    
     with open(file, "w", encoding="utf-8") as f:
         if format == "json":
-            json.dump({"playlists": playlists, "albums": liked_albums}, f)
+            json.dump({"playlists": playlists, "albums": liked_albums}, f, indent=2, ensure_ascii=False)
         else:
             for playlist in playlists:
                 f.write(playlist["name"] + "\r\n")
@@ -186,6 +271,11 @@ def write_to_file(file, format, playlists, liked_albums):
                             )
                         )
                 f.write("\r\n")
+    
+    # Verify file was written
+    if os.path.exists(file):
+        file_size = os.path.getsize(file)
+        print(f"✓ File written successfully ({file_size} bytes)")
 
 
 def main(dump="playlists,liked", format="json", file="playlists.json", token=""):

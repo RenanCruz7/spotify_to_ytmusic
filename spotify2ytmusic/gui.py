@@ -297,7 +297,7 @@ class Window:
 
         def run_in_thread():
             if os.path.exists("oauth.json"):
-                print("File detected, auto login")
+                print("✓ File detected, auto login")
             elif auto:
                 print("No file detected. Manual login required")
                 return
@@ -307,27 +307,33 @@ class Window:
                 # Open a new console window to run the command
                 if os.name == "nt":  # If the OS is Windows
                     try:
+                        import sys
+                        python_exe = sys.executable
+                        
+                        # Run the custom setup script in a new console
                         process = subprocess.Popen(
-                            ["ytmusicapi", "oauth"],
+                            [python_exe, "setup_yt_oauth.py"],
                             creationflags=subprocess.CREATE_NEW_CONSOLE,
+                            cwd=os.getcwd()
                         )
+                        print("YouTube Music login window opened. Please log in...")
+                        process.wait()
+                        print("Login process completed")
                     except FileNotFoundError as e:
-                        print(
-                            f"ERROR: Unable to run 'ytmusicapi oauth'.  Is ytmusicapi installed?  Perhaps try running 'pip install ytmusicapi' Exception: {e}"
-                        )
+                        print(f"ERROR: Unable to run setup script. Exception: {e}")
                         sys.exit(1)
-                    process.communicate()
                 else:  # For Unix and Linux
                     try:
                         subprocess.call(
-                            "python3 -m ytmusicapi oauth",
+                            "python3 setup_yt_oauth.py",
                             shell=True,
-                            stdout=subprocess.PIPE,
                         )
                     except Exception as e:
                         print(f"An error occurred: {e}")
 
-
+            if os.path.exists("oauth.json"):
+                print("✓ oauth.json is ready!")
+                
             self.tabControl.select(self.tab2)
             print()
 
